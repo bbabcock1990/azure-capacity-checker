@@ -22,7 +22,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
-from capacity_checker import AzureCapacityChecker, DISCLAIMER
+from capacity_checker import AzureCapacityChecker, FullCheckResult, DISCLAIMER
 
 # Only load .env file for local development; Azure Functions injects
 # Application Settings as environment variables automatically.

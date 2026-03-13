@@ -52,6 +52,41 @@ class CapacityCheckResult:
     error_code: Optional[str] = field(default=None)
 
 
+@dataclass
+class SkuCheckResult:
+    vm_size: str
+    region: str
+    available: bool
+    capacity_reservation_supported: bool
+    restrictions: list[str] = field(default_factory=list)
+    message: str = ""
+
+
+@dataclass
+class QuotaCheckResult:
+    family: str
+    region: str
+    current_usage: int
+    limit: int
+    vcpus_needed: int
+    sufficient: bool
+    message: str = ""
+
+
+@dataclass
+class FullCheckResult:
+    vm_size: str
+    region: str
+    zone: Optional[str]
+    sku_check: SkuCheckResult
+    quota_check: QuotaCheckResult
+    capacity_check: Optional[CapacityCheckResult]
+    confidence_score: int
+    signal_level: str
+    summary: str
+    disclaimer: str = DISCLAIMER
+
+
 class AzureCapacityChecker:
     """
     Checks real-time Azure VM capacity via the ODCR (On-Demand Capacity
@@ -226,6 +261,176 @@ class AzureCapacityChecker:
 
         finally:
             self._cleanup(rg_name, crg_name, cr_name, cr_created, crg_created)
+
+    def check_sku(self, vm_size: str, region: str) -> SkuCheckResult:
+        """Check whether the VM SKU is available and supports capacity reservations."""
+        try:
+            skus = self.compute_client.resource_skus.list(filter=f"location eq '{region}'")
+            for sku in skus:
+                if sku.name == vm_size and sku.resource_type == "virtualMachines":
+                    restrictions = []
+                    cr_supported = False
+                    available = True
+
+                    if sku.restrictions:
+                        for r in sku.restrictions:
+                            if r.type and r.type.lower() == "location":
+                                available = False
+                                restrictions.append(f"Location restricted: {r.reason_code}")
+                            elif r.type and r.type.lower() == "zone":
+                                restrictions.append(f"Zone restricted: {r.reason_code}")
+
+                    for cap in (sku.capabilities or []):
+                        if cap.name == "CapacityReservationSupported" and cap.value == "True":
+                            cr_supported = True
+                            break
+
+                    msg = "SKU available" if available else f"SKU restricted: {', '.join(restrictions)}"
+                    return SkuCheckResult(
+                        vm_size=vm_size, region=region,
+                        available=available, capacity_reservation_supported=cr_supported,
+                        restrictions=restrictions, message=msg,
+                    )
+
+            return SkuCheckResult(
+                vm_size=vm_size, region=region,
+                available=False, capacity_reservation_supported=False,
+                message=f"SKU '{vm_size}' not found in region '{region}'",
+            )
+        except Exception as exc:
+            logger.warning("SKU check failed: %s", exc)
+            return SkuCheckResult(
+                vm_size=vm_size, region=region,
+                available=False, capacity_reservation_supported=False,
+                message=f"SKU check error: {exc}",
+            )
+
+    def check_quota(self, vm_size: str, region: str, quantity: int = 1) -> QuotaCheckResult:
+        """Check vCPU quota for the VM family in the given region."""
+        family = "Unknown"
+        vcpus_per_vm = 0
+
+        try:
+            skus = self.compute_client.resource_skus.list(filter=f"location eq '{region}'")
+            for sku in skus:
+                if sku.name == vm_size and sku.resource_type == "virtualMachines":
+                    for cap in (sku.capabilities or []):
+                        if cap.name == "vCPUsAvailable":
+                            vcpus_per_vm = int(cap.value)
+                        elif cap.name == "vCPUs" and vcpus_per_vm == 0:
+                            vcpus_per_vm = int(cap.value)
+                    family = sku.family or "Unknown"
+                    break
+        except Exception as exc:
+            logger.warning("Could not look up SKU info for quota check: %s", exc)
+
+        vcpus_needed = vcpus_per_vm * quantity
+
+        try:
+            usages = self.compute_client.usage.list(region)
+            for usage in usages:
+                if usage.name and usage.name.value and family.lower() in usage.name.value.lower():
+                    current = usage.current_value
+                    limit = usage.limit
+                    sufficient = (limit - current) >= vcpus_needed
+                    return QuotaCheckResult(
+                        family=family, region=region,
+                        current_usage=current, limit=limit,
+                        vcpus_needed=vcpus_needed, sufficient=sufficient,
+                        message=f"Quota: {current}/{limit} vCPUs used, need {vcpus_needed}",
+                    )
+        except Exception as exc:
+            logger.warning("Quota check failed: %s", exc)
+
+        return QuotaCheckResult(
+            family=family, region=region,
+            current_usage=-1, limit=-1,
+            vcpus_needed=vcpus_needed, sufficient=True,
+            message="Could not verify quota — assuming sufficient",
+        )
+
+    def full_check(
+        self,
+        vm_size: str,
+        region: str,
+        zone: Optional[str] = None,
+        quantity: int = 1,
+    ) -> FullCheckResult:
+        """Run SKU check, quota check, and ODCR capacity probe, then score."""
+        sku_result = self.check_sku(vm_size, region)
+        quota_result = self.check_quota(vm_size, region, quantity)
+
+        capacity_result: Optional[CapacityCheckResult] = None
+        if sku_result.available:
+            try:
+                capacity_result = self.check_capacity(vm_size, region, zone)
+            except Exception as exc:
+                logger.error("ODCR probe failed: %s", exc)
+                capacity_result = CapacityCheckResult(
+                    vm_size=vm_size, region=region, zone=zone,
+                    available=False, message=f"Probe error: {exc}",
+                )
+
+        score = self._compute_confidence(sku_result, quota_result, capacity_result)
+        level = self._score_to_level(score)
+        summary = self._build_summary(
+            vm_size, region, zone, sku_result, quota_result, capacity_result, score, level
+        )
+
+        return FullCheckResult(
+            vm_size=vm_size, region=region, zone=zone,
+            sku_check=sku_result, quota_check=quota_result,
+            capacity_check=capacity_result,
+            confidence_score=score, signal_level=level, summary=summary,
+        )
+
+    @staticmethod
+    def _compute_confidence(
+        sku: SkuCheckResult,
+        quota: QuotaCheckResult,
+        capacity: Optional[CapacityCheckResult],
+    ) -> int:
+        if not sku.available:
+            return 0
+        score = 20  # base for SKU available
+        if sku.capacity_reservation_supported:
+            score += 5
+        if quota.sufficient:
+            score += 15
+        if capacity is not None:
+            score += 60 if capacity.available else 0
+        return min(score, 100)
+
+    @staticmethod
+    def _score_to_level(score: int) -> str:
+        if score >= 90:
+            return "High"
+        if score >= 60:
+            return "Medium"
+        if score >= 20:
+            return "Low"
+        return "None"
+
+    @staticmethod
+    def _build_summary(
+        vm_size: str, region: str, zone: Optional[str],
+        sku: SkuCheckResult, quota: QuotaCheckResult,
+        capacity: Optional[CapacityCheckResult],
+        score: int, level: str,
+    ) -> str:
+        zone_str = f" zone {zone}" if zone else ""
+        parts = [f"{vm_size} in {region}{zone_str}:"]
+        parts.append(f"SKU {'available' if sku.available else 'restricted'}")
+        if not sku.available:
+            parts.append("— skipping further checks")
+            return " ".join(parts)
+        parts.append(f"| Quota {'OK' if quota.sufficient else 'INSUFFICIENT'}")
+        if capacity is not None:
+            parts.append(f"| ODCR {'PASS' if capacity.available else 'FAIL'}")
+        else:
+            parts.append("| ODCR not checked")
+        parts.append(f"→ {level} confidence ({score}/100)")
+        return " ".join(parts)
 
     # ------------------------------------------------------------------
     # Internal helpers
