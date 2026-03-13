@@ -1,0 +1,12 @@
+# Web framework
+fastapi>=0.111.0
+uvicorn[standard]>=0.30.0
+
+# Azure SDK
+azure-identity>=1.17.0
+azure-mgmt-compute>=33.0.0
+azure-mgmt-resource>=23.1.0
+
+# Utilities
+python-dotenv>=1.0.1
+pydantic>=2.7.0
