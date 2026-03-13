@@ -334,6 +334,56 @@ Use the [client credentials flow](https://learn.microsoft.com/en-us/entra/identi
 | **Assignment required** | Restricts which users/groups in your tenant can authenticate |
 | **Managed Identity RBAC** | Scoped to the probe resource group only — limits what the Function App can do in Azure, even if compromised |
 
+#### Authentication flow
+
+```
+┌─────────────────┐     ┌──────────────────┐     ┌─────────────────────────┐
+│  Client (CLI,   │     │   Microsoft      │     │  Azure Function App     │
+│  PowerShell,    │     │   Entra ID       │     │  + Easy Auth            │
+│  custom app)    │     │   (Token Issuer) │     │                         │
+└────────┬────────┘     └─────────┬────────┘     └────────────┬────────────┘
+         │                       │                            │
+    1. Request token             │                            │
+    (az account get-access-token)│                            │
+         │                       │                            │
+         └──────────────────────►│                            │
+                          2. Validate user,                   │
+                          issue JWT token                     │
+                          (aud: api://APP-ID)                 │
+         ┌───────────────────────┘                            │
+         │                                                    │
+    3. Call API with                                          │
+    Authorization: Bearer <token>                             │
+         │                                                    │
+         └───────────────────────────────────────────────────►│
+                                              4. Easy Auth (platform layer)
+                                                 validates JWT:
+                                                 ─ Issuer matches tenant?
+                                                 ─ Audience in allowed list?
+                                                 ─ Token not expired?
+                                                 ─ User assigned? (if required)
+                                                          │
+                                                 ┌────────┴────────┐
+                                                 │                 │
+                                            Valid │            Invalid │
+                                                 │                 │
+                                                 ▼                 ▼
+                                          5. Request         Return 401/403
+                                          forwarded to      (never reaches
+                                          FastAPI app        your code)
+                                                 │
+                                                 ▼
+                                          6. FastAPI uses
+                                          Managed Identity
+                                          to call Azure APIs
+                                          (SKU, Quota, ODCR)
+```
+
+**Key points:**
+- Easy Auth runs at the **platform level** — invalid requests are rejected before they reach your Python code
+- The API itself never handles tokens, validates JWTs, or manages authentication logic
+- Two separate identities are in play: the **user's Entra ID token** (for calling the API) and the **Function App's managed identity** (for calling Azure Resource Manager APIs)
+
 > **Note:** Entra ID authentication is enforced at the Azure platform level.
 > Local development (`uvicorn` / `python run.py`) does **not** require
 > authentication — it runs unauthenticated for convenience. If you need to
@@ -623,6 +673,28 @@ The confidence score (0–100) combines three signals:
 | 60–89 | **Medium** | Most signals positive, some concerns |
 | 20–59 | **Low** | Significant concerns — capacity may not be available |
 | 0–19 | **None** | Capacity very unlikely to be available |
+
+### Cross-subscription capacity signals
+
+The ODCR probe tests **physical hardware availability** in a region. Since Azure's compute hardware pool is shared across all subscriptions, a successful probe on one subscription is a strong directional signal that the same hardware is available for other subscriptions in the same region.
+
+**What this means in practice:** If you run this tool against your own subscription and get a High confidence score for `Standard_D4as_v4` in `southcentralus`, you can reasonably tell a customer that physical capacity looks good in that region for that VM size — as long as:
+
+| Condition | Why it matters |
+|---|---|
+| Same VM size and region/zone | The hardware pool is specific to the SKU and location |
+| Similar deployment size | The probe tests 1 VM's worth; a customer deploying 100 may exhaust available capacity |
+| Reasonable time window | Capacity is dynamic — a probe from hours ago may be stale |
+| No subscription-level restrictions | The customer's subscription must not have the SKU restricted (`NotAvailableForSubscription`) |
+| Sufficient quota | The customer needs enough vCPU quota for the VM family |
+
+**What you can say:**
+> "Our probes show capacity signals are currently strong for Standard_D4as_v4 in southcentralus. This indicates physical hardware is available in the region right now. We recommend verifying quota and SKU restrictions on your own subscription before deploying."
+
+**What you cannot say:**
+> "Capacity is guaranteed for your deployment in this region."
+
+> **Tip:** For the most accurate cross-subscription signal, focus on the **ODCR probe result** (`capacity_available`) rather than the overall confidence score. The SKU and quota checks are subscription-specific, but the ODCR probe tests the shared hardware pool.
 
 ---
 
