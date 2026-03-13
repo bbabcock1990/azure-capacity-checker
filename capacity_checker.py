@@ -35,6 +35,12 @@ CAPACITY_ERROR_SUBSTRINGS: list[str] = [
     "insufficient",
 ]
 
+DISCLAIMER: str = (
+    "Capacity checks are point-in-time signals only. Azure capacity is dynamic "
+    "and can change at any moment. Results do NOT guarantee that capacity will "
+    "be available when you deploy. Use this API for directional guidance only."
+)
+
 
 @dataclass
 class CapacityCheckResult:
