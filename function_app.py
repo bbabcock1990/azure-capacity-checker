@@ -14,4 +14,4 @@ from main import app
 
 # Wrap the FastAPI ASGI app as an Azure Function HTTP trigger.
 # All routes defined in main.py are automatically available.
-app_function = func.AsFunctionApp(app=app, http_auth_level=func.AuthLevel.ANONYMOUS)
+app_function = func.AsgiFunctionApp(app=app, http_auth_level=func.AuthLevel.ANONYMOUS)
