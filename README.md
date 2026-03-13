@@ -144,17 +144,24 @@ The same codebase runs as an Azure Function App with zero code changes. The `fun
 ```bash
 cd azure-capacity-checker
 
-# 1. Install dependencies (includes azure-functions)
-pip install -r requirements-azure.txt
+# 1. Create and activate a virtual environment
+python -m venv .venv
+.venv\Scripts\activate          # Windows
+# source .venv/bin/activate     # Linux / macOS
 
-# 2. Configure local.settings.json
+# 2. Install dependencies (includes azure-functions)
+pip install -r requirements.txt
+
+# 3. Configure local.settings.json
 #    Set AZURE_SUBSCRIPTION_ID or leave blank for auto-discovery
 
-# 3. Start the Function App locally
+# 4. Start the Function App locally (must run inside the activated venv)
 func start
 ```
 
 The API is available at **http://localhost:7071/api/v1/check** (and all other routes).
+
+> **Note:** `func start` must run inside the activated virtual environment so it picks up the installed dependencies. The `routePrefix` is set to `""` in `host.json` so routes match between local uvicorn and Azure Function modes.
 
 ### Deploy to Azure
 
@@ -338,8 +345,8 @@ azure-capacity-checker/
 ├── function_app.py         # Azure Function ASGI wrapper
 ├── host.json               # Azure Function host configuration
 ├── local.settings.json     # Azure Function local settings (not deployed)
-├── requirements.txt        # Dependencies for local development
-├── requirements-azure.txt  # Dependencies including azure-functions
+├── requirements.txt        # All dependencies (includes azure-functions)
+├── requirements-azure.txt  # Alternate requirements file (same packages)
 ├── run.py                  # Local dev launcher (uvicorn)
 ├── .env.example            # Environment variable template
 └── README.md
@@ -585,8 +592,9 @@ The confidence score (0–100) combines three signals:
 
 | Signal | Points | Description |
 |---|---|---|
-| SKU available + ODCR supported | 20 | SKU exists in region, no restrictions, supports Capacity Reservations |
-| Quota sufficient | 20 | vCPU quota headroom ≥ vCPUs needed |
+| SKU available | 20 | SKU exists in region with no restrictions |
+| ODCR supported | 5 | SKU supports On-Demand Capacity Reservations |
+| Quota sufficient | 15 | vCPU quota headroom ≥ vCPUs needed |
 | ODCR probe succeeded | 60 | Azure accepted the ephemeral Capacity Reservation |
 
 | Score Range | Signal Level | Meaning |

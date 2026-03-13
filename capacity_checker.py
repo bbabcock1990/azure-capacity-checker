@@ -483,3 +483,35 @@ class AzureCapacityChecker:
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Could not delete CRG '%s': %s", crg_name, exc)
+
+    def sweep_orphaned_probes(self) -> int:
+        """Delete any orphaned cap-probe-* CRGs left by failed or interrupted probes."""
+        cleaned = 0
+        rg_name = self.probe_resource_group
+        try:
+            crgs = self.compute_client.capacity_reservation_groups.list_by_resource_group(rg_name)
+            for crg in crgs:
+                if crg.name and crg.name.startswith("cap-probe-crg-"):
+                    try:
+                        # Delete any CRs inside the CRG first
+                        crs = self.compute_client.capacity_reservations.list_by_capacity_reservation_group(
+                            rg_name, crg.name
+                        )
+                        for cr in crs:
+                            try:
+                                self.compute_client.capacity_reservations.begin_delete(
+                                    rg_name, crg.name, cr.name
+                                ).result()
+                            except Exception as exc:  # noqa: BLE001
+                                logger.warning("Could not delete orphaned CR '%s': %s", cr.name, exc)
+                        self.compute_client.capacity_reservation_groups.delete(rg_name, crg.name)
+                        cleaned += 1
+                        logger.info("Cleaned up orphaned CRG '%s'", crg.name)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("Could not clean up CRG '%s': %s", crg.name, exc)
+        except HttpResponseError as exc:
+            if exc.status_code == 404:
+                logger.info("Resource group '%s' not found — nothing to clean up", rg_name)
+            else:
+                raise
+        return cleaned

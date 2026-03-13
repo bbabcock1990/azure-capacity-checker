@@ -389,7 +389,7 @@ async def check_capacity_batch(
             region = item.region.strip().lower()
             try:
                 result = await asyncio.to_thread(
-                    probe_checker.check_capacity, item.vm_size, region, item.zone, item.quantity
+                    probe_checker.check_capacity, item.vm_size, region, item.zone
                 )
                 return CapacityResponse(
                     vm_size=result.vm_size,
@@ -719,7 +719,7 @@ async def check_sku(
     region = region.strip().lower()
 
     try:
-        result = await asyncio.to_thread(checker.check_sku_availability, vm_size, region)
+        result = await asyncio.to_thread(checker.check_sku, vm_size, region)
     except Exception as exc:
         logger.error("SKU check failed: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
