@@ -2,9 +2,10 @@
 Azure Capacity Checker — Azure Function App entry-point.
 
 This module wraps the FastAPI application as an Azure Function using the
-ASGI integration.  The same FastAPI app (main.py) runs in both modes:
-  - Local: uvicorn main:app --reload
-  - Azure Function: this file maps the FastAPI ASGI app to an HTTP trigger
+ASGI integration.  The same FastAPI app (main.py) runs in all modes:
+  - Local uvicorn: uvicorn main:app --reload  (or python run.py)
+  - Local func:    func start  (uses this file)
+  - Azure Function: deployed via this file
 
 Deploy as a Python v2 Azure Function App.
 """

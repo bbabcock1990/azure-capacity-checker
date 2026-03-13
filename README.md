@@ -23,7 +23,7 @@ Client → GET /api/v1/check?vm_size=Standard_D4s_v3&region=eastus
            │
            ▼
    4. Calculate confidence score (0–100)
-      └─ SKU: 20pts | Quota: 20pts | ODCR: 60pts
+      └─ SKU: 20pts | ODCR-supported: 5pts | Quota: 15pts | ODCR: 60pts
            │
            ▼
    Return JSON with prerequisites + probe + score + disclaimer
@@ -349,6 +349,8 @@ azure-capacity-checker/
 ├── requirements-azure.txt  # Alternate requirements file (same packages)
 ├── run.py                  # Local dev launcher (uvicorn)
 ├── .env.example            # Environment variable template
+├── test_endpoints.py       # Unit tests (mocked, no Azure calls)
+├── test_integration.py     # Integration tests (real Azure calls)
 └── README.md
 ```
 
@@ -388,7 +390,9 @@ Returns service health and configuration status.
 ```json
 {
   "status": "healthy",
+  "runtime": "local",
   "subscription_configured": true,
+  "subscription_source": "environment",
   "probe_resource_group": "az-cap-probe-rg"
 }
 ```
@@ -434,24 +438,24 @@ curl "http://localhost:8000/api/v1/check?vm_size=Standard_D4s_v3&region=eastus&r
     "available": true,
     "capacity_reservation_supported": true,
     "restrictions": [],
-    "message": "SKU Standard_D4s_v3 is available in eastus and supports Capacity Reservations"
+    "message": "SKU available"
   },
   "quota_check": {
-    "family": "Standard DSv3 Family vCPUs",
+    "family": "standardDSv3Family",
     "region": "eastus",
     "current_usage": 12,
     "limit": 100,
     "vcpus_needed": 4,
     "sufficient": true,
-    "message": "Quota for Standard DSv3 Family vCPUs: 12/100 used, 88 available, 4 needed — SUFFICIENT"
+    "message": "Quota: 12/100 vCPUs used, need 4"
   },
   "capacity_available": true,
-  "capacity_message": "Capacity is available for 1x Standard_D4s_v3 in eastus",
+  "capacity_message": "Capacity is available for Standard_D4s_v3 in eastus",
   "capacity_error_code": null,
   "confidence_score": 100,
   "signal_level": "High",
-  "summary": "Capacity IS available for Standard_D4s_v3 in eastus. Confidence: 100/100 (High).",
-  "disclaimer": "IMPORTANT: This capacity check provides a point-in-time signal only..."
+  "summary": "Standard_D4s_v3 in eastus: SKU available | Quota OK | ODCR PASS → High confidence (100/100)",
+  "disclaimer": "Capacity checks are point-in-time signals only. Azure capacity is dynamic and can change at any moment. Results do NOT guarantee that capacity will be available when you deploy. Use this API for directional guidance only."
 }
 ```
 
@@ -519,7 +523,7 @@ Azure Capacity Check Report
 
   1/2 passed
 
-  * IMPORTANT: This capacity check provides a point-in-time signal only...
+  * Capacity checks are point-in-time signals only. Azure capacity is dynamic...
 ```
 
 ---
@@ -628,7 +632,7 @@ The API uses a single **probe resource group** to hold the ephemeral Capacity Re
 
 The API uses three layers of protection to ensure probe resources are always cleaned up:
 
-1. **Per-probe cleanup** — every probe runs in a `try/finally` block that deletes the CR and CRG, with 3 retries per resource and 404-handling for idempotency.
+1. **Per-probe cleanup** — every probe runs in a `try/finally` block that deletes the CR and CRG. Cleanup errors are logged but swallowed to avoid masking the probe result.
 2. **Post-batch sweep** — after every batch request, the API scans the probe resource group for any remaining `cap-probe-*` CRGs and deletes them.
 3. **Manual cleanup** — call `POST /api/v1/cleanup` to trigger a sweep on demand.
 
@@ -647,7 +651,7 @@ az capacity reservation group list \
 
 | Variable | Default | Description |
 |---|---|---|
-| `AZURE_SUBSCRIPTION_ID` | — | **Required.** Target Azure subscription |
+| `AZURE_SUBSCRIPTION_ID` | — | Target Azure subscription (optional if using auto-discovery via `az login` or per-request `subscription_id` parameter) |
 | `AZURE_PROBE_RESOURCE_GROUP` | `az-cap-probe-rg` | Resource group for ephemeral probe resources |
 | `AZURE_TENANT_ID` | — | Service-principal tenant ID |
 | `AZURE_CLIENT_ID` | — | Service-principal client ID |

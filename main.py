@@ -1,9 +1,10 @@
 """
 Azure Capacity Checker — FastAPI application entry-point.
 
-Runs in two modes:
-  - Local:          uvicorn main:app --reload  (or python run.py)
-  - Azure Function: via function_app.py ASGI wrapper
+Runs in three modes:
+  - Local uvicorn:  uvicorn main:app --reload  (or python run.py)
+  - Local func:     func start  (via function_app.py ASGI wrapper)
+  - Azure Function: deployed via function_app.py ASGI wrapper
 
 Environment variables (see .env.example / Application Settings):
     AZURE_SUBSCRIPTION_ID        — optional (auto-discovered if not set)
