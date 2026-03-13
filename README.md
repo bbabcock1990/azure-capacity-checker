@@ -486,6 +486,23 @@ curl "http://localhost:8000/api/v1/check?vm_size=Standard_D4s_v3&region=eastus&q
 Invoke-RestMethod -Uri "http://localhost:8000/api/v1/check?vm_size=Standard_D4s_v3&region=eastus&quantity=5"
 ```
 
+**Example — Azure Function with Bearer token (curl)**
+```bash
+TOKEN=$(az account get-access-token --resource "api://YOUR-APP-ID" --query accessToken -o tsv)
+
+curl -H "Authorization: Bearer $TOKEN" \
+  "https://YOUR-FUNCTION-APP.azurewebsites.net/api/v1/check?vm_size=Standard_D4s_v3&region=eastus&quantity=5"
+```
+
+**Example — Azure Function with Bearer token (PowerShell)**
+```powershell
+$token = az account get-access-token --resource "api://YOUR-APP-ID" --query accessToken -o tsv
+
+Invoke-RestMethod `
+  -Uri "https://YOUR-FUNCTION-APP.azurewebsites.net/api/v1/check?vm_size=Standard_D4s_v3&region=eastus&quantity=5" `
+  -Headers @{ Authorization = "Bearer $token" }
+```
+
 **Example — plain-text report**
 ```bash
 curl "http://localhost:8000/api/v1/check?vm_size=Standard_D4s_v3&region=eastus&report=true"
@@ -560,6 +577,40 @@ curl -X POST "http://localhost:8000/api/v1/check/batch" \
   }'
 ```
 
+**Example — Azure Function with Bearer token (PowerShell)**
+```powershell
+$token = az account get-access-token --resource "api://YOUR-APP-ID" --query accessToken -o tsv
+
+$body = @{
+    checks = @(
+        @{ vm_size = "Standard_D4s_v3"; region = "eastus"; quantity = 5 },
+        @{ vm_size = "Standard_D8s_v5"; region = "westus2"; zone = "1"; quantity = 2 }
+    )
+} | ConvertTo-Json -Depth 3
+
+Invoke-RestMethod `
+  -Uri "https://YOUR-FUNCTION-APP.azurewebsites.net/api/v1/check/batch?report=true" `
+  -Method POST `
+  -Body $body `
+  -ContentType "application/json" `
+  -Headers @{ Authorization = "Bearer $token" }
+```
+
+**Example — Azure Function with Bearer token (curl)**
+```bash
+TOKEN=$(az account get-access-token --resource "api://YOUR-APP-ID" --query accessToken -o tsv)
+
+curl -X POST "https://YOUR-FUNCTION-APP.azurewebsites.net/api/v1/check/batch?report=true" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "checks": [
+      { "vm_size": "Standard_D4s_v3", "region": "eastus", "quantity": 5 },
+      { "vm_size": "Standard_D8s_v5", "region": "westus2", "zone": "1", "quantity": 2 }
+    ]
+  }'
+```
+
 **Request body schema**
 
 | Field | Type | Required | Description |
@@ -607,6 +658,13 @@ Read-only check with no cost. Validates the SKU exists, has no restrictions, and
 curl "http://localhost:8000/api/v1/check-sku?vm_size=Standard_D4s_v3&region=eastus"
 ```
 
+**Example — Azure Function with Bearer token**
+```bash
+TOKEN=$(az account get-access-token --resource "api://YOUR-APP-ID" --query accessToken -o tsv)
+curl -H "Authorization: Bearer $TOKEN" \
+  "https://YOUR-FUNCTION-APP.azurewebsites.net/api/v1/check-sku?vm_size=Standard_D4s_v3&region=eastus"
+```
+
 ---
 
 ### `GET /api/v1/check-quota` — vCPU quota only
@@ -620,6 +678,13 @@ Read-only check with no cost. Returns vCPU usage vs limit for the VM family. **D
 
 ```bash
 curl "http://localhost:8000/api/v1/check-quota?vm_size=Standard_D4s_v3&region=eastus"
+```
+
+**Example — Azure Function with Bearer token**
+```bash
+TOKEN=$(az account get-access-token --resource "api://YOUR-APP-ID" --query accessToken -o tsv)
+curl -H "Authorization: Bearer $TOKEN" \
+  "https://YOUR-FUNCTION-APP.azurewebsites.net/api/v1/check-quota?vm_size=Standard_D4s_v3&region=eastus"
 ```
 
 ---
@@ -648,6 +713,13 @@ Scans the probe resource group and deletes any leftover `cap-probe-*` Capacity R
 
 ```bash
 curl -X POST "http://localhost:8000/api/v1/cleanup?subscription_id=YOUR-SUB-ID"
+```
+
+**Example — Azure Function with Bearer token**
+```bash
+TOKEN=$(az account get-access-token --resource "api://YOUR-APP-ID" --query accessToken -o tsv)
+curl -X POST -H "Authorization: Bearer $TOKEN" \
+  "https://YOUR-FUNCTION-APP.azurewebsites.net/api/v1/cleanup?subscription_id=YOUR-SUB-ID"
 ```
 
 ```json
