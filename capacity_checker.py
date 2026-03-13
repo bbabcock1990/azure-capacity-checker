@@ -96,11 +96,12 @@ class AzureCapacityChecker:
     SDK clients and caches the credential.
     """
 
-    def __init__(self, subscription_id: str, probe_resource_group: str):
+    def __init__(self, subscription_id: str, probe_resource_group: str, managed_identity_client_id: Optional[str] = None):
         if not subscription_id:
             raise ValueError("subscription_id must not be empty")
         self.subscription_id = subscription_id
         self.probe_resource_group = probe_resource_group
+        self.managed_identity_client_id = managed_identity_client_id
         self._credential: Optional[DefaultAzureCredential] = None
         self._compute_client: Optional[ComputeManagementClient] = None
         self._resource_client: Optional[ResourceManagementClient] = None
@@ -112,7 +113,10 @@ class AzureCapacityChecker:
     @property
     def credential(self) -> DefaultAzureCredential:
         if self._credential is None:
-            self._credential = DefaultAzureCredential()
+            kwargs = {}
+            if self.managed_identity_client_id:
+                kwargs["managed_identity_client_id"] = self.managed_identity_client_id
+            self._credential = DefaultAzureCredential(**kwargs)
         return self._credential
 
     @property

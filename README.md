@@ -85,7 +85,16 @@ AZURE_CLIENT_SECRET=your-client-secret
 
 ### Option 3: Managed Identity (recommended for Azure-hosted deployments)
 
-If running on Azure (VM, App Service, Function App), assign a system-assigned managed identity and grant it the required RBAC role. No environment variables needed — `DefaultAzureCredential` picks it up automatically.
+If running on Azure (VM, App Service, Function App), assign a managed identity and grant it the required RBAC role.
+
+**System-assigned identity:** No environment variables needed — `DefaultAzureCredential` picks it up automatically.
+
+**User-assigned identity:** Set `AZURE_MANAGED_IDENTITY_CLIENT_ID` to the Client ID of the identity in your Function App's Application Settings (or `.env` for local development). This is required because `DefaultAzureCredential` cannot auto-discover user-assigned identities.
+
+```bash
+# Find the client ID of your user-assigned identity
+az identity show --name YOUR-IDENTITY-NAME --resource-group YOUR-RG --query clientId -o tsv
+```
 
 ### Multi-tenant / multi-subscription usage
 
@@ -219,7 +228,7 @@ func azure functionapp publish YOUR-FUNCTION-APP-NAME
 
 The Azure Function App **must** be protected with Microsoft Entra ID (formerly Azure AD) authentication. This ensures that only authorized users in your organization can call the API. Unauthenticated requests are rejected by the platform before they reach your code.
 
-#### Step 1: Register an App in Entra ID
+#### Step 1: Register an App and Expose an API
 
 ```bash
 # Create the app registration
@@ -232,6 +241,12 @@ APP_ID=<appId-from-output>
 
 # Create a service principal for the app
 az ad sp create --id $APP_ID
+
+# Set the Application ID URI (required for token requests)
+az ad app update --id $APP_ID --identifier-uris "api://$APP_ID"
+
+# Add a user_impersonation scope so clients can request tokens
+az ad app update --id $APP_ID --set api='{"oauth2PermissionScopes":[{"adminConsentDescription":"Access Azure Capacity Checker API","adminConsentDisplayName":"Access API","id":"00000000-0000-0000-0000-000000000001","isEnabled":true,"type":"User","userConsentDescription":"Access Azure Capacity Checker API","userConsentDisplayName":"Access API","value":"user_impersonation"}]}'
 ```
 
 Or via the Azure Portal:
@@ -240,37 +255,29 @@ Or via the Azure Portal:
 3. Supported account types: **Accounts in this organizational directory only**
 4. Click **Register**
 5. Note the **Application (client) ID** and **Directory (tenant) ID**
+6. Go to **Expose an API** → **Set** the Application ID URI (accept the default `api://YOUR-APP-ID`)
+7. Click **+ Add a scope** → Scope name: `user_impersonation`, Who can consent: **Admins and users**, fill display names, click **Add scope**
+8. Under **Authorized client applications**, click **+ Add a client application** → Client ID: `04b07795-8ddb-461a-bbee-02f9e1bf7b46` (Azure CLI), check the `user_impersonation` scope, click **Add**
 
 #### Step 2: Enable Authentication on the Function App
 
-```bash
-az webapp auth config-version upgrade \
-  --resource-group YOUR-RG \
-  --name YOUR-FUNCTION-APP-NAME
+The recommended approach is via the Azure Portal, which avoids common pitfalls with CLI-based configuration:
 
-az webapp auth update \
-  --resource-group YOUR-RG \
-  --name YOUR-FUNCTION-APP-NAME \
-  --enabled true \
-  --action LoginWithAzureActiveDirectory \
-  --unauthenticated-client-action Return401
-
-az webapp auth microsoft update \
-  --resource-group YOUR-RG \
-  --name YOUR-FUNCTION-APP-NAME \
-  --client-id $APP_ID \
-  --issuer "https://login.microsoftonline.com/YOUR-TENANT-ID/v2.0" \
-  --allowed-audiences "api://$APP_ID"
-```
-
-Or via the Azure Portal:
 1. Go to your **Function App → Authentication**
 2. Click **Add identity provider**
 3. Select **Microsoft**
-4. **App registration type**: Pick an existing app registration
-5. Select the `Azure Capacity Checker API` app you created in Step 1
-6. **Unauthenticated requests**: Return HTTP 401
-7. Click **Add**
+4. **App registration type**: Provide the details of an existing app registration
+5. **Application (client) ID**: your app's client ID
+6. **Issuer URL**: `https://sts.windows.net/YOUR-TENANT-ID/`
+7. **Allowed token audiences**: add both `api://YOUR-APP-ID` and `YOUR-APP-ID`
+8. **Client application requirement**: **Allow requests from any application** (required for Azure CLI access)
+9. **Identity requirement**: **Allow requests from any identity**
+10. **Unauthenticated requests**: Return HTTP 401
+11. Click **Add**
+
+> **Important:** The issuer URL must be `https://sts.windows.net/YOUR-TENANT-ID/` (without `/v2.0` suffix). Azure CLI issues v1 tokens, and a v2.0 issuer will cause `IDX10214: Audience validation failed` errors.
+>
+> **Important:** "Client application requirement" must be set to **Allow requests from any application**. The default "Allow requests only from this application itself" blocks Azure CLI and other clients from calling the API (they have a different `appid` in their tokens).
 
 #### Step 3: Restrict access to specific users/groups (recommended)
 
@@ -282,9 +289,16 @@ By default, any user in your Entra ID tenant can authenticate. To restrict acces
 4. Go to **Users and groups** → **Add user/group**
 5. Select the users or security groups that should have access
 
-#### Step 4: Calling the secured API
+#### Step 4: First-time consent and token acquisition
 
-Users must obtain a token from Entra ID and pass it as a Bearer token:
+The first time a user calls the API via Azure CLI, they must consent to the app. Run this once:
+
+```bash
+az logout
+az login --tenant "YOUR-TENANT-ID" --scope "api://YOUR-APP-ID/.default"
+```
+
+After consenting, acquire tokens normally:
 
 **Using Azure CLI (simplest for testing):**
 ```bash
@@ -306,6 +320,8 @@ Invoke-RestMethod `
   -Uri "https://YOUR-FUNCTION-APP-NAME.azurewebsites.net/api/v1/check?vm_size=Standard_D4s_v3&region=eastus" `
   -Headers @{ Authorization = "Bearer $token" }
 ```
+
+> **Note:** Always use `https://` when calling the Azure-hosted API. HTTP requests bypass Easy Auth and will be rejected.
 
 **From application code (service-to-service):**
 Use the [client credentials flow](https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-client-creds-grant-flow) with a client secret or certificate. Create a client secret in the app registration and use it to acquire a token for the `api://YOUR-APP-ID` audience.
@@ -330,7 +346,7 @@ Use the [client credentials flow](https://learn.microsoft.com/en-us/entra/identi
 |---|---|
 | **Timeout** | ODCR probes take 30–90s each. Consumption plan has a 5-min max; **Premium or Dedicated plan** recommended for batch requests (10-min timeout configured in `host.json`). |
 | **Authentication** | **REQUIRED.** Microsoft Entra ID (Easy Auth) must be enabled. See [Securing the API with Entra ID](#securing-the-api-with-microsoft-entra-id-required) above. |
-| **Managed Identity** | Use system-assigned identity. Scope RBAC to the **probe resource group only** — not the subscription. |
+| **Managed Identity** | System-assigned or user-assigned. For user-assigned, set `AZURE_MANAGED_IDENTITY_CLIENT_ID`. Scope RBAC to the **probe resource group only** — not the subscription. |
 | **Cold starts** | Azure SDK imports take ~2-3s. Use Premium plan with "always ready" instances to avoid cold start latency. |
 | **Concurrency** | Each Function instance is a single Python worker. `BATCH_CONCURRENCY=3` is safe. Avoid very large batch sizes on Consumption plan. |
 | **Auto-discovery** | Azure CLI is not available in Azure Functions. Set `AZURE_SUBSCRIPTION_ID` in Application Settings, or the API will use the Managed Identity to discover subscriptions. |
@@ -653,6 +669,7 @@ az capacity reservation group list \
 |---|---|---|
 | `AZURE_SUBSCRIPTION_ID` | — | Target Azure subscription (optional if using auto-discovery via `az login` or per-request `subscription_id` parameter) |
 | `AZURE_PROBE_RESOURCE_GROUP` | `az-cap-probe-rg` | Resource group for ephemeral probe resources |
+| `AZURE_MANAGED_IDENTITY_CLIENT_ID` | — | Client ID of a user-assigned managed identity. Leave empty for system-assigned. |
 | `AZURE_TENANT_ID` | — | Service-principal tenant ID |
 | `AZURE_CLIENT_ID` | — | Service-principal client ID |
 | `AZURE_CLIENT_SECRET` | — | Service-principal secret |
@@ -692,6 +709,36 @@ Run the cleanup endpoint:
 ```bash
 curl -X POST "http://localhost:8000/api/v1/cleanup?subscription_id=YOUR-SUB-ID"
 ```
+
+### `AuthorizationFailed` when running on Azure Function App
+
+The managed identity does not have Contributor on the probe resource group **in the subscription being targeted**. The RBAC role assignment must be in the same subscription as the `subscription_id` you're passing. Verify with:
+
+```bash
+az role assignment list --assignee YOUR-IDENTITY-OBJECT-ID --scope /subscriptions/YOUR-SUB-ID/resourceGroups/az-cap-probe-rg -o table
+```
+
+### `IDX10214: Audience validation failed` (401)
+
+The token's audience doesn't match what Easy Auth expects. Ensure:
+1. The **Issuer URL** on the Function App's auth config is `https://sts.windows.net/YOUR-TENANT-ID/` (no `/v2.0`)
+2. **Allowed token audiences** includes both `api://YOUR-APP-ID` and `YOUR-APP-ID`
+3. The app registration has an **Application ID URI** set (`api://YOUR-APP-ID`) under **Expose an API**
+
+### `403 Forbidden` with a valid token
+
+Common causes:
+- **Client application requirement** is set to "Allow requests only from this application itself" — change to **Allow requests from any application** in the Function App's Authentication settings
+- **Assignment required** is enabled but the user is not assigned — add the user under **Enterprise applications → Users and groups**, or set **Assignment required** to **No**
+- Using `http://` instead of `https://` — Easy Auth only works over HTTPS
+
+### `consent_required` / `AADSTS650057` when getting a token
+
+The app registration is missing a scope. Go to **App registrations → Expose an API** and add a `user_impersonation` scope. Also add Azure CLI (`04b07795-8ddb-461a-bbee-02f9e1bf7b46`) as an authorized client application.
+
+### Managed identity not found on Azure Function App
+
+If using a **user-assigned** managed identity, set `AZURE_MANAGED_IDENTITY_CLIENT_ID` in the Function App's Application Settings to the identity's Client ID. `DefaultAzureCredential` cannot auto-discover user-assigned identities.
 
 ---
 

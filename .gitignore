@@ -11,7 +11,7 @@ venv/
 local.settings.json
 
 # IDE
-.vscode/
+
 .idea/
 *.swp
 *.swo
@@ -19,3 +19,5 @@ local.settings.json
 # OS
 .DS_Store
 Thumbs.db
+
+.python_packages

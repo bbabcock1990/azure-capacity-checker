@@ -42,6 +42,9 @@ PROBE_RESOURCE_GROUP: str = os.environ.get(
     "AZURE_PROBE_RESOURCE_GROUP", "az-cap-probe-rg"
 )
 
+# Client ID of a user-assigned managed identity (leave empty for system-assigned)
+MANAGED_IDENTITY_CLIENT_ID: str = os.environ.get("AZURE_MANAGED_IDENTITY_CLIENT_ID", "")
+
 # Max concurrent ODCR probes when handling batch requests
 BATCH_CONCURRENCY: int = int(os.environ.get("BATCH_CONCURRENCY", "3"))
 
@@ -249,7 +252,7 @@ def _get_checker(
                 "(3) log in with 'az login' so the API can auto-discover your subscription."
             ),
         )
-    return AzureCapacityChecker(sub_id, PROBE_RESOURCE_GROUP)
+    return AzureCapacityChecker(sub_id, PROBE_RESOURCE_GROUP, MANAGED_IDENTITY_CLIENT_ID or None)
 
 
 # ── Endpoints ──────────────────────────────────────────────────────────────────
